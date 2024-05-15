@@ -97,7 +97,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "air-dropper"
+name = "airdropper"
 version = "0.1.0"
 dependencies = [
  "clap 4.5.4",

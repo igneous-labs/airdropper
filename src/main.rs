@@ -80,7 +80,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    Logger::try_with_str("error, air_dropper=debug")
+    Logger::try_with_str("error, airdropper=debug")
         .unwrap()
         .start()
         .unwrap();
