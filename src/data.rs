@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::{collections::HashSet, path::Path, str::FromStr};
 
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signature::Signature, signer::Signer};
@@ -16,8 +16,11 @@ use crate::{
 struct WalletListEntryRaw {
     pub wallet_pubkey: String,
     pub amount_to_airdrop: u64,
+    #[serde(default)]
     pub ata: Option<String>,
+    #[serde(default)]
     pub status: Option<u8>,
+    #[serde(default)]
     pub status_inner: Option<String>,
 }
 
@@ -27,9 +30,10 @@ pub enum Status {
     Unprocessed,
     Disqualified,
     Qualified,
-    Failed(String), // marked to be reset to Unprocessed for retrial
+    Unconfirmed(Signature),
+    Failed(String),
     Succeeded(Signature),
-    Excluded(String), // set aside due to too many failed attempts
+    Excluded(String),
 }
 
 impl Status {
@@ -38,9 +42,10 @@ impl Status {
             Self::Unprocessed => (0, None),
             Self::Disqualified => (1, None),
             Self::Qualified => (2, None),
-            Self::Failed(err) => (3, Some(err.to_string())),
-            Self::Succeeded(sig) => (4, Some(sig.to_string())),
-            Self::Excluded(err) => (5, Some(err.to_string())),
+            Self::Unconfirmed(sig) => (3, Some(sig.to_string())),
+            Self::Failed(err) => (4, Some(err.to_string())),
+            Self::Succeeded(sig) => (5, Some(sig.to_string())),
+            Self::Excluded(err) => (6, Some(err.to_string())),
         }
     }
 
@@ -49,9 +54,10 @@ impl Status {
             (0, None) => Self::Unprocessed,
             (1, None) => Self::Disqualified,
             (2, None) => Self::Qualified,
-            (3, Some(err)) => Self::Failed(err),
-            (4, Some(sig)) => Self::Succeeded(Signature::from_str(&sig)?),
-            (5, Some(err)) => Self::Excluded(err),
+            (3, Some(sig)) => Self::Unconfirmed(Signature::from_str(&sig)?),
+            (4, Some(err)) => Self::Failed(err),
+            (5, Some(sig)) => Self::Succeeded(Signature::from_str(&sig)?),
+            (6, Some(err)) => Self::Excluded(err),
             (value, inner_value) => {
                 panic!("Wrong arg was given to Status::try_from_raw: ({value}, {inner_value:?})")
             }
@@ -81,7 +87,7 @@ impl WalletListEntry {
     }
 
     // Failed -> given status
-    fn set_failed(&mut self, status: Status) {
+    fn set_failed_to(&mut self, status: Status) {
         if let Status::Failed(_) = self.status {
             self.status = status;
         }
@@ -94,17 +100,28 @@ impl WalletListEntry {
         }
     }
 
+    fn set_unconfirmed_to_failed(&mut self) {
+        if let Status::Unconfirmed(sig) = &self.status {
+            self.status = Status::Failed(format!("{sig:?}: Could not confirm transaction"));
+        }
+    }
+
+    fn set_unconfirmed_to_succeeded(&mut self) {
+        if let Status::Unconfirmed(sig) = &self.status {
+            self.status = Status::Succeeded(sig.to_owned());
+        }
+    }
+
     fn find_ata(&mut self, token_mint_pubkey: &Pubkey, token_program_id: &Pubkey) {
         if self.ata.is_none() {
             self.ata = Some(get_associated_token_address_with_program_id(
                 &self.wallet_pubkey,
-                &token_mint_pubkey,
-                &token_program_id,
+                token_mint_pubkey,
+                token_program_id,
             ));
         }
     }
 
-    // if status = Qualified, then prep transfer ix
     pub fn to_transfer_ix(
         &self,
         token_mint_pubkey: &Pubkey,
@@ -112,28 +129,41 @@ impl WalletListEntry {
         token_decimals: u8,
         source_ata: &Pubkey,
         payer: &dyn Signer,
-    ) -> Option<Instruction> {
-        if let Status::Qualified = self.status {
-            let ix = transfer_checked(
-                token_program_id,
-                source_ata,
-                token_mint_pubkey,
-                &self.ata.unwrap(),
-                &payer.pubkey(),
-                &[&payer.pubkey()],
-                self.amount_to_airdrop,
-                token_decimals,
-            )
-            .unwrap_or_else(|_| {
-                // NOTE:
-                //  - normally, this should never happen since transfer_checked can only error out when incorrect program id was given.
-                //  - if this errors out, then given data of wallet list has to contain a wrong line.
-                panic!("This should not happen unless given wallet list data was wrong: {self:?}");
-            });
+    ) -> Instruction {
+        transfer_checked(
+            token_program_id,
+            source_ata,
+            token_mint_pubkey,
+            &self.ata.unwrap(),
+            &payer.pubkey(),
+            &[&payer.pubkey()],
+            self.amount_to_airdrop,
+            token_decimals,
+        )
+        .unwrap_or_else(|_| {
+            // NOTE:
+            //  - normally, this should never happen since transfer_checked can only error out when incorrect program id was given.
+            //  - if this errors out, then given data of wallet list has to contain a wrong line.
+            panic!("This should not happen unless given wallet list data was wrong: {self:?}");
+        })
+    }
 
-            Some(ix)
-        } else {
-            None
+    // DELETEME
+    // Unconfirmed -> Succeeded | Unconfirmed
+    fn confirm(&mut self, rpc_client: &RpcClient) {
+        if let Status::Unconfirmed(sig) = self.status {
+            let res = rpc_client.confirm_transaction_with_commitment(&sig, rpc_client.commitment());
+            if let Ok(response) = res {
+                if response.value {
+                    log::debug!("Confirmed: {sig:?}");
+                    self.status = Status::Succeeded(sig);
+                } else {
+                    log::debug!("Unconfirmed: {sig:?}");
+                }
+            } else {
+                log::debug!("Failed to fetch: {sig:?}");
+                // TODO: should this set the status to failed?
+            }
         }
     }
 }
@@ -186,11 +216,13 @@ impl WalletList {
     }
 
     pub fn save_to_path<T: AsRef<Path>>(&self, path: T) -> Result<()> {
+        log::info!("Saving status data ...");
         let mut wtr = csv::Writer::from_path(path)?;
         for entry in self.0.iter() {
             wtr.write_record(entry.to_record())?;
         }
         wtr.flush()?;
+        log::info!("Finished saving status data");
         Ok(())
     }
 
@@ -210,11 +242,20 @@ impl WalletList {
             .len()
     }
 
+    // DELETEME
+    pub fn count_unconfirmed(&self) -> usize {
+        self.0
+            .iter()
+            .filter(|entry| matches!(entry.status, Status::Unconfirmed(_)))
+            .collect::<Vec<_>>()
+            .len()
+    }
+
     // Failed -> Unprocessed
     // used for retrying check_unprocessed procedure
     pub fn set_failed_to_unprocessed(&mut self) {
         for entry in self.0.iter_mut() {
-            entry.set_failed(Status::Unprocessed);
+            entry.set_failed_to(Status::Unprocessed);
         }
     }
 
@@ -222,7 +263,7 @@ impl WalletList {
     // used for retrying transfer_airdrop procedure
     pub fn set_failed_to_qualified(&mut self) {
         for entry in self.0.iter_mut() {
-            entry.set_failed(Status::Qualified);
+            entry.set_failed_to(Status::Qualified);
         }
     }
 
@@ -242,13 +283,22 @@ impl WalletList {
         token_program_id: &Pubkey,
         token_decimals: u8,
     ) {
-        log::debug!("Finding atas ...");
-        for entry in self.0.iter_mut() {
-            entry.find_ata(token_mint_pubkey, token_program_id);
-        }
         log::debug!("Checking qualification ...");
-        for entries in self.0.chunks_mut(ATA_GET_MULT_ACC_CHUNK_SIZE) {
-            let atas: Vec<Pubkey> = entries.iter().map(|entry| entry.ata.unwrap()).collect();
+        for entries in self
+            .0
+            .iter_mut()
+            .filter(|entry| matches!(entry.status, Status::Unprocessed))
+            .collect::<Vec<_>>()
+            .chunks_mut(ATA_GET_MULT_ACC_CHUNK_SIZE)
+        {
+            let atas: Vec<Pubkey> = entries
+                .iter_mut()
+                .map(|entry| {
+                    entry.find_ata(token_mint_pubkey, token_program_id);
+
+                    entry.ata.unwrap()
+                })
+                .collect();
             let statuses = check_atas(rpc_client, &atas, token_decimals);
             for (entry, status) in entries.iter_mut().zip(statuses) {
                 entry.status = status;
@@ -274,20 +324,21 @@ impl WalletList {
             .0
             .iter()
             .enumerate()
-            .filter_map(|(idx, entry)| {
-                entry
-                    .to_transfer_ix(
+            .filter_map(|(idx, entry)| match entry.status {
+                Status::Qualified => {
+                    let ix = entry.to_transfer_ix(
                         token_mint_pubkey,
                         token_program_id,
                         token_decimals,
                         source_ata,
                         payer,
-                    )
-                    .map(|ix| (idx, ix))
+                    );
+                    Some((idx, ix))
+                }
+                _ => None,
             })
             .collect();
 
-        // TODO: proper compute budget args
         let compute_budget_ixs = get_compute_budget_ixs(compute_unit_limit, compute_unit_price);
         for ixs_with_idx in transfer_ixs_with_idx.chunks(TRANSFER_IXS_CHUNK_SIZE) {
             let (idxs, transfer_ixs): (Vec<_>, Vec<_>) = ixs_with_idx.iter().cloned().unzip();
@@ -302,19 +353,67 @@ impl WalletList {
             if dry_run {
                 log::info!("{:#?}", rpc_client.simulate_transaction(&tx).unwrap());
             } else {
-                let tx_res = rpc_client.send_and_confirm_transaction_with_spinner_and_commitment(
-                    &tx,
-                    rpc_client.commitment(),
-                );
-
+                let tx_res = rpc_client.send_transaction(&tx);
                 let status = match tx_res {
-                    Ok(sig) => Status::Succeeded(sig),
+                    Ok(sig) => Status::Unconfirmed(sig),
                     Err(err) => Status::Failed(err.to_string()),
                 };
                 for idx in idxs {
                     self.0.get_mut(idx).unwrap().status = status.clone();
                 }
             }
+        }
+    }
+
+    // Unconfirmed -> Succeeded | Unconfirmed
+    // returns number of unconfirmed sigs
+    pub fn confirm(&mut self, rpc_client: &RpcClient) -> usize {
+        let unconfirmed_signatures: HashSet<Signature> = self
+            .0
+            .iter()
+            .filter(|entry| matches!(entry.status, Status::Unconfirmed(_)))
+            .map(|entry| match entry.status {
+                Status::Unconfirmed(sig) => sig,
+                _ => unreachable!(),
+            })
+            .collect();
+        let unconfirmed_count = unconfirmed_signatures.len();
+        log::debug!("Confirming {} txs ...", unconfirmed_count);
+        let mut confirmed_count: usize = 0;
+        for sig in unconfirmed_signatures {
+            let res = rpc_client.confirm_transaction_with_commitment(&sig, rpc_client.commitment());
+            if let Ok(response) = res {
+                if response.value {
+                    log::debug!("Confirmed: {sig:?}");
+                    self.0
+                        .iter_mut()
+                        .filter(|entry| match entry.status {
+                            Status::Unconfirmed(signature) => signature == sig,
+                            _ => false,
+                        })
+                        .for_each(|entry| entry.set_unconfirmed_to_succeeded());
+                    confirmed_count += 1;
+                } else {
+                    log::debug!("Unconfirmed: {sig:?}");
+                }
+            } else {
+                log::debug!("Failed to get tx: {sig:?}");
+                // TODO: should this set the status to failed?
+            }
+        }
+        let unconfirmed_count = unconfirmed_count - confirmed_count;
+        log::debug!(
+            "Confirmed: {}; Unconfirmed: {}",
+            confirmed_count,
+            unconfirmed_count
+        );
+        unconfirmed_count
+    }
+
+    // Unconfirmed -> Failed
+    pub fn set_unconfirmed_to_failed(&mut self) {
+        for entry in self.0.iter_mut() {
+            entry.set_unconfirmed_to_failed();
         }
     }
 }

@@ -114,7 +114,6 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account 3.0.2",
  "spl-token-2022 3.0.2",
- "tokio",
 ]
 
 [[package]]
