@@ -1,3 +1,5 @@
+use std::{io::Write, path::PathBuf};
+
 use solana_account_decoder::parse_token::{parse_token, TokenAccountType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::instruction::Instruction;
@@ -81,4 +83,46 @@ pub fn get_compute_budget_ixs(
         ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
         ComputeBudgetInstruction::set_compute_unit_price(compute_unit_price),
     ]
+}
+
+pub fn add_to_filename(path: &PathBuf, name: &str) -> PathBuf {
+    let mut res = path.clone();
+    let stem = res.file_stem().unwrap().to_str().unwrap();
+    let ext = res.extension().unwrap().to_str().unwrap();
+    res.set_file_name(format!("{stem}.{name}.{ext}"));
+    res
+}
+
+// intended to be used to save stage results without overwriting.
+// i.e. given "wallet-list.checked.csv" and "wallet-list.checked.0.csv" exists,
+// the function moves "wallet-list.checked.csv" to "wallet-list.checked.1.csv"
+pub fn create_backup_if_file_exists(path: &PathBuf) -> Result<()> {
+    if !path.try_exists()? {
+        return Ok(());
+    }
+
+    let mut n = 0;
+    let backup_path = loop {
+        let target = add_to_filename(path, &n.to_string());
+        if !target.try_exists()? {
+            break target;
+        }
+        n += 1;
+    };
+
+    log::info!("Saving backup for {path:?} to {backup_path:?}");
+    std::fs::rename(path, backup_path)?;
+
+    Ok(())
+}
+
+// prompt for confirmation for a potentially mistakable action
+pub fn prompt_confirmation(msg: &str) -> bool {
+    let mut buffer = String::new();
+    loop {
+        print!("{msg} (Y/N): ");
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stdin().read_line(&mut buffer);
+        break buffer.trim().to_uppercase().as_str() == "Y";
+    }
 }
