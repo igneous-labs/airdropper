@@ -2,7 +2,10 @@ use clap::Subcommand;
 
 use crate::errors::Result;
 
-use self::{check::CheckArgs, send::SendArgs, snapshot::SnapshotArgs};
+use self::{
+    check::CheckArgs, confirm::ConfirmArgs, display::DisplayArgs, send::SendArgs,
+    snapshot::SnapshotArgs,
+};
 
 mod check;
 mod confirm;
@@ -15,8 +18,8 @@ pub enum Subcmd {
     Snapshot(SnapshotArgs),
     Check(CheckArgs),
     Send(SendArgs),
-    Confirm,
-    Display,
+    Confirm(ConfirmArgs),
+    Display(DisplayArgs),
 }
 
 impl Subcmd {
@@ -25,8 +28,8 @@ impl Subcmd {
             Self::Snapshot(_) => SnapshotArgs::run(args),
             Self::Check(_) => CheckArgs::run(args),
             Self::Send(_) => SendArgs::run(args),
-            Self::Confirm => confirm::run(args),
-            Self::Display => display::run(args),
+            Self::Confirm(_) => ConfirmArgs::run(args),
+            Self::Display(_) => DisplayArgs::run(args),
         }
     }
 }
