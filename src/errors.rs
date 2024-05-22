@@ -14,6 +14,7 @@ pub enum Error {
     RpcError(RpcError),
     ProgramError(ProgramError),
     KeyPairError,
+    StageNotReady,
 }
 
 impl From<std::io::Error> for Error {

@@ -100,6 +100,7 @@ dependencies = [
 name = "airdropper"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "clap 4.5.4",
  "csv",
  "derive_more",

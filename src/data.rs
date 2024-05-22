@@ -1,6 +1,11 @@
-use std::{collections::HashSet, path::Path, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    path::PathBuf,
+    str::FromStr,
+};
 
-use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_client::{RpcClient, SerializableTransaction};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signature::Signature, signer::Signer};
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::instruction::transfer_checked;
@@ -8,7 +13,7 @@ use spl_token_2022::instruction::transfer_checked;
 use crate::{
     consts::{ATA_GET_MULT_ACC_CHUNK_SIZE, TRANSFER_IXS_CHUNK_SIZE},
     errors::{Error, Result},
-    utils::{check_atas, get_compute_budget_ixs, prep_tx},
+    utils::{check_atas, create_backup_if_file_exists, get_compute_budget_ixs, prep_tx},
 };
 
 // TODO: use serde with
@@ -19,7 +24,7 @@ struct WalletListEntryRaw {
     #[serde(default)]
     pub ata: Option<String>,
     #[serde(default)]
-    pub status: Option<u8>,
+    pub status: Option<String>,
     #[serde(default)]
     pub status_inner: Option<String>,
 }
@@ -37,32 +42,38 @@ pub enum Status {
 }
 
 impl Status {
-    fn to_record(&self) -> (u8, Option<String>) {
+    fn to_record(&self) -> (String, Option<String>) {
         match self {
-            Self::Unprocessed => (0, None),
-            Self::Disqualified => (1, None),
-            Self::Qualified => (2, None),
-            Self::Unconfirmed(sig) => (3, Some(sig.to_string())),
-            Self::Failed(err) => (4, Some(err.to_string())),
-            Self::Succeeded(sig) => (5, Some(sig.to_string())),
-            Self::Excluded(err) => (6, Some(err.to_string())),
+            Self::Unprocessed => ("unprocessed".to_string(), None),
+            Self::Disqualified => ("disqualified".to_string(), None),
+            Self::Qualified => ("qualified".to_string(), None),
+            Self::Unconfirmed(sig) => ("unconfirmed".to_string(), Some(sig.to_string())),
+            Self::Failed(err) => ("failed".to_string(), Some(err.to_string())),
+            Self::Succeeded(sig) => ("succeeded".to_string(), Some(sig.to_string())),
+            Self::Excluded(err) => ("excluded".to_string(), Some(err.to_string())),
         }
     }
 
-    fn try_from_raw(value: u8, inner_value: Option<String>) -> Result<Self> {
+    fn try_from_raw(value: &str, inner_value: Option<String>) -> Result<Self> {
         let status = match (value, inner_value) {
-            (0, None) => Self::Unprocessed,
-            (1, None) => Self::Disqualified,
-            (2, None) => Self::Qualified,
-            (3, Some(sig)) => Self::Unconfirmed(Signature::from_str(&sig)?),
-            (4, Some(err)) => Self::Failed(err),
-            (5, Some(sig)) => Self::Succeeded(Signature::from_str(&sig)?),
-            (6, Some(err)) => Self::Excluded(err),
+            ("unprocessed", None) => Self::Unprocessed,
+            ("disqualified", None) => Self::Disqualified,
+            ("qualified", None) => Self::Qualified,
+            ("unconfirmed", Some(sig)) => Self::Unconfirmed(Signature::from_str(&sig)?),
+            ("failed", Some(err)) => Self::Failed(err),
+            ("succeeded", Some(sig)) => Self::Succeeded(Signature::from_str(&sig)?),
+            ("excluded", Some(err)) => Self::Excluded(err),
             (value, inner_value) => {
                 panic!("Wrong arg was given to Status::try_from_raw: ({value}, {inner_value:?})")
             }
         };
         Ok(status)
+    }
+}
+
+impl Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_record().0)
     }
 }
 
@@ -147,25 +158,6 @@ impl WalletListEntry {
             panic!("This should not happen unless given wallet list data was wrong: {self:?}");
         })
     }
-
-    // DELETEME
-    // Unconfirmed -> Succeeded | Unconfirmed
-    fn confirm(&mut self, rpc_client: &RpcClient) {
-        if let Status::Unconfirmed(sig) = self.status {
-            let res = rpc_client.confirm_transaction_with_commitment(&sig, rpc_client.commitment());
-            if let Ok(response) = res {
-                if response.value {
-                    log::debug!("Confirmed: {sig:?}");
-                    self.status = Status::Succeeded(sig);
-                } else {
-                    log::debug!("Unconfirmed: {sig:?}");
-                }
-            } else {
-                log::debug!("Failed to fetch: {sig:?}");
-                // TODO: should this set the status to failed?
-            }
-        }
-    }
 }
 
 impl TryFrom<WalletListEntryRaw> for WalletListEntry {
@@ -183,7 +175,7 @@ impl TryFrom<WalletListEntryRaw> for WalletListEntry {
         let wallet_pubkey = Pubkey::from_str(&wallet_pubkey)?;
         let ata = ata.and_then(|v| Pubkey::from_str(&v).ok()); // NOTE: if ata is somehow wrong, just set it to None and retry
         let status = Status::try_from_raw(
-            status.unwrap_or_else(|| Status::default().to_record().0),
+            &status.unwrap_or_else(|| Status::default().to_record().0),
             status_inner,
         )?;
         Ok(Self {
@@ -199,7 +191,8 @@ impl TryFrom<WalletListEntryRaw> for WalletListEntry {
 pub struct WalletList(pub Vec<WalletListEntry>);
 
 impl WalletList {
-    pub fn parse_list_from_path<T: AsRef<Path>>(path: T) -> Result<Self> {
+    pub fn parse_list_from_path(path: &PathBuf) -> Result<Self> {
+        log::info!("Parsing wallet list from {path:?} ...");
         let data = std::fs::read_to_string(path)?;
         let mut rdr = csv::ReaderBuilder::new()
             .delimiter(b',')
@@ -208,22 +201,36 @@ impl WalletList {
         let list = rdr
             .deserialize()
             .collect::<std::result::Result<Vec<WalletListEntryRaw>, _>>()?;
-        let list = list
+        let mut list = list
             .into_iter()
             .map(WalletListEntry::try_from)
             .collect::<std::result::Result<Vec<WalletListEntry>, _>>()?;
+        list.sort_by(|a, b| a.wallet_pubkey.cmp(&b.wallet_pubkey));
+        log::info!("Finished parsing wallet list");
         Ok(Self(list))
     }
 
-    pub fn save_to_path<T: AsRef<Path>>(&self, path: T) -> Result<()> {
-        log::info!("Saving status data ...");
+    pub fn save_to_path(&mut self, path: &PathBuf) -> Result<()> {
+        log::info!("Saving status data to {path:?} ...");
+        log::info!("{:#?}", self.count_each_status());
+        create_backup_if_file_exists(path)?;
         let mut wtr = csv::Writer::from_path(path)?;
+        self.0.sort_by(|a, b| a.wallet_pubkey.cmp(&b.wallet_pubkey));
         for entry in self.0.iter() {
             wtr.write_record(entry.to_record())?;
         }
         wtr.flush()?;
         log::info!("Finished saving status data");
         Ok(())
+    }
+
+    pub fn count_each_status(&self) -> HashMap<String, usize> {
+        self.0.iter().fold(HashMap::new(), |mut map, entry| {
+            map.entry(entry.status.to_string())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+            map
+        })
     }
 
     pub fn count_qualified(&self) -> usize {
@@ -295,7 +302,7 @@ impl WalletList {
                 .iter_mut()
                 .map(|entry| {
                     entry.find_ata(token_mint_pubkey, token_program_id);
-
+                    // UNWRAP-SAFTY: entry.find_ata is guaranteed to set entry.ata
                     entry.ata.unwrap()
                 })
                 .collect();
@@ -308,6 +315,7 @@ impl WalletList {
 
     // Qualified -> Succeeded | Failed
     // NOTE: Failed status might contain false positive (rpc returned failure but token transfer happened)
+    #[allow(clippy::too_many_arguments)]
     pub fn transfer_airdrop(
         &mut self,
         rpc_client: &RpcClient,
@@ -319,10 +327,12 @@ impl WalletList {
         compute_unit_limit: u32,
         compute_unit_price: u64,
         dry_run: bool,
+        should_confirm: bool,
     ) {
         let transfer_ixs_with_idx: Vec<(usize, Instruction)> = self
             .0
             .iter()
+            .filter(|entry| entry.wallet_pubkey != payer.pubkey())
             .enumerate()
             .filter_map(|(idx, entry)| match entry.status {
                 Status::Qualified => {
@@ -339,6 +349,12 @@ impl WalletList {
             })
             .collect();
 
+        log::info!(
+            "Sending {} txs ...",
+            transfer_ixs_with_idx
+                .len()
+                .div_ceil(TRANSFER_IXS_CHUNK_SIZE)
+        );
         let compute_budget_ixs = get_compute_budget_ixs(compute_unit_limit, compute_unit_price);
         for ixs_with_idx in transfer_ixs_with_idx.chunks(TRANSFER_IXS_CHUNK_SIZE) {
             let (idxs, transfer_ixs): (Vec<_>, Vec<_>) = ixs_with_idx.iter().cloned().unzip();
@@ -353,10 +369,20 @@ impl WalletList {
             if dry_run {
                 log::info!("{:#?}", rpc_client.simulate_transaction(&tx).unwrap());
             } else {
-                let tx_res = rpc_client.send_transaction(&tx);
-                let status = match tx_res {
-                    Ok(sig) => Status::Unconfirmed(sig),
-                    Err(err) => Status::Failed(err.to_string()),
+                let status = if should_confirm {
+                    let _tx_res = rpc_client
+                        .send_and_confirm_transaction_with_spinner_and_commitment(
+                            &tx,
+                            rpc_client.commitment(),
+                        );
+                    // NOTE: just set it to unconfirmed to be safe (always manually run the confirm stage to resolve)
+                    Status::Unconfirmed(tx.get_signature().to_owned())
+                } else {
+                    let tx_res = rpc_client.send_transaction(&tx);
+                    match tx_res {
+                        Ok(sig) => Status::Unconfirmed(sig),
+                        Err(err) => Status::Failed(err.to_string()),
+                    }
                 };
                 for idx in idxs {
                     self.0.get_mut(idx).unwrap().status = status.clone();
@@ -365,18 +391,22 @@ impl WalletList {
         }
     }
 
-    // Unconfirmed -> Succeeded | Unconfirmed
-    // returns number of unconfirmed sigs
-    pub fn confirm(&mut self, rpc_client: &RpcClient) -> usize {
-        let unconfirmed_signatures: HashSet<Signature> = self
-            .0
+    pub fn get_unconfirmed_sigs(&self) -> HashSet<Signature> {
+        self.0
             .iter()
             .filter(|entry| matches!(entry.status, Status::Unconfirmed(_)))
             .map(|entry| match entry.status {
                 Status::Unconfirmed(sig) => sig,
                 _ => unreachable!(),
             })
-            .collect();
+            .collect()
+    }
+
+    // Unconfirmed -> Succeeded | Unconfirmed
+    // returns number of unconfirmed sigs
+    pub fn confirm(&mut self, rpc_client: &RpcClient) -> usize {
+        let unconfirmed_signatures = self.get_unconfirmed_sigs();
+
         let unconfirmed_count = unconfirmed_signatures.len();
         log::debug!("Confirming {} txs ...", unconfirmed_count);
         let mut confirmed_count: usize = 0;
