@@ -1,7 +1,7 @@
 use derive_more::Display;
 use solana_program::program_error::ProgramError;
 use solana_rpc_client_api::client_error::Error as RpcError;
-use solana_sdk::{pubkey::ParsePubkeyError, signature::ParseSignatureError};
+use solana_sdk::{pubkey::ParsePubkeyError, signature::ParseSignatureError, signer::SignerError};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -15,6 +15,7 @@ pub enum Error {
     ProgramError(ProgramError),
     KeyPairError,
     StageNotReady,
+    SignerError(SignerError),
 }
 
 impl From<std::io::Error> for Error {
@@ -50,6 +51,12 @@ impl From<RpcError> for Error {
 impl From<ProgramError> for Error {
     fn from(value: ProgramError) -> Self {
         Self::ProgramError(value)
+    }
+}
+
+impl From<SignerError> for Error {
+    fn from(value: SignerError) -> Self {
+        Self::SignerError(value)
     }
 }
 

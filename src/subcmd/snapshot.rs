@@ -44,7 +44,7 @@ pub struct SnapshotArgs {
     )]
     snapshot_token_mint_pubkey: Pubkey,
 
-    #[arg(long, short, help = "The total amount (in token atomic) to air drop")]
+    #[arg(long, short, help = "The total amount (in token atomic) to airdrop")]
     amount_to_airdrop: u64,
 
     #[arg(

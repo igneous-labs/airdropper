@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{builder::ValueParser, Parser};
-use flexi_logger::Logger;
 use sanctum_solana_cli_utils::ConfigWrapper;
 
 use crate::{errors::Result, subcmd::Subcmd};
@@ -31,7 +30,11 @@ struct Args {
     )]
     pub wallet_list_path: PathBuf,
 
-    #[arg(long, short)]
+    #[arg(
+        long,
+        short,
+        help = "dry run (note: if set, does not save any files nor send any transactions)"
+    )]
     pub dry_run: bool,
 
     #[command(subcommand)]
@@ -39,8 +42,11 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    Logger::try_with_str("error, airdropper=debug")
+    flexi_logger::Logger::try_with_str("error, airdropper=debug")
         .unwrap()
+        .append()
+        .log_to_file(flexi_logger::FileSpec::default().suppress_timestamp()) // write logs to file
+        .duplicate_to_stderr(flexi_logger::Duplicate::All)
         .start()
         .unwrap();
 

@@ -364,7 +364,9 @@ impl WalletList {
                 .cloned()
                 .chain(transfer_ixs)
                 .collect();
-            let tx = prep_tx(rpc_client, payer, &ixs);
+
+            // TODO: error handling and retry
+            let tx = prep_tx(rpc_client, payer, &ixs).unwrap();
 
             if dry_run {
                 log::info!("{:#?}", rpc_client.simulate_transaction(&tx).unwrap());

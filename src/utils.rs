@@ -8,6 +8,7 @@ use solana_client::rpc_client::RpcClient;
 use solana_program::instruction::Instruction;
 use solana_sdk::{
     account::Account,
+    commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     message::{v0::Message, VersionedMessage},
     pubkey::Pubkey,
@@ -69,13 +70,14 @@ pub fn prep_tx(
     rpc_client: &RpcClient,
     payer: &dyn Signer,
     ixs: &[Instruction],
-) -> VersionedTransaction {
-    let rbh = rpc_client.get_latest_blockhash().unwrap();
-    VersionedTransaction::try_new(
+) -> Result<VersionedTransaction> {
+    let rbh = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?
+        .0;
+    Ok(VersionedTransaction::try_new(
         VersionedMessage::V0(Message::try_compile(&payer.pubkey(), ixs, &[], rbh).unwrap()),
         &[payer],
-    )
-    .unwrap()
+    )?)
 }
 
 pub fn get_compute_budget_ixs(
