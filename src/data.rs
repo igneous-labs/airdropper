@@ -158,25 +158,6 @@ impl WalletListEntry {
             panic!("This should not happen unless given wallet list data was wrong: {self:?}");
         })
     }
-
-    // DELETEME
-    // Unconfirmed -> Succeeded | Unconfirmed
-    fn confirm(&mut self, rpc_client: &RpcClient) {
-        if let Status::Unconfirmed(sig) = self.status {
-            let res = rpc_client.confirm_transaction_with_commitment(&sig, rpc_client.commitment());
-            if let Ok(response) = res {
-                if response.value {
-                    log::debug!("Confirmed: {sig:?}");
-                    self.status = Status::Succeeded(sig);
-                } else {
-                    log::debug!("Unconfirmed: {sig:?}");
-                }
-            } else {
-                log::debug!("Failed to fetch: {sig:?}");
-                // TODO: should this set the status to failed?
-            }
-        }
-    }
 }
 
 impl TryFrom<WalletListEntryRaw> for WalletListEntry {
@@ -220,19 +201,21 @@ impl WalletList {
         let list = rdr
             .deserialize()
             .collect::<std::result::Result<Vec<WalletListEntryRaw>, _>>()?;
-        let list = list
+        let mut list = list
             .into_iter()
             .map(WalletListEntry::try_from)
             .collect::<std::result::Result<Vec<WalletListEntry>, _>>()?;
+        list.sort_by(|a, b| a.wallet_pubkey.cmp(&b.wallet_pubkey));
         log::info!("Finished parsing wallet list");
         Ok(Self(list))
     }
 
-    pub fn save_to_path(&self, path: &PathBuf) -> Result<()> {
+    pub fn save_to_path(&mut self, path: &PathBuf) -> Result<()> {
         log::info!("Saving status data to {path:?} ...");
         log::info!("{:#?}", self.count_each_status());
         create_backup_if_file_exists(path)?;
         let mut wtr = csv::Writer::from_path(path)?;
+        self.0.sort_by(|a, b| a.wallet_pubkey.cmp(&b.wallet_pubkey));
         for entry in self.0.iter() {
             wtr.write_record(entry.to_record())?;
         }
@@ -319,7 +302,7 @@ impl WalletList {
                 .iter_mut()
                 .map(|entry| {
                     entry.find_ata(token_mint_pubkey, token_program_id);
-
+                    // UNWRAP-SAFTY: entry.find_ata is guaranteed to set entry.ata
                     entry.ata.unwrap()
                 })
                 .collect();
@@ -332,6 +315,7 @@ impl WalletList {
 
     // Qualified -> Succeeded | Failed
     // NOTE: Failed status might contain false positive (rpc returned failure but token transfer happened)
+    #[allow(clippy::too_many_arguments)]
     pub fn transfer_airdrop(
         &mut self,
         rpc_client: &RpcClient,
@@ -348,6 +332,7 @@ impl WalletList {
         let transfer_ixs_with_idx: Vec<(usize, Instruction)> = self
             .0
             .iter()
+            .filter(|entry| entry.wallet_pubkey != payer.pubkey())
             .enumerate()
             .filter_map(|(idx, entry)| match entry.status {
                 Status::Qualified => {
