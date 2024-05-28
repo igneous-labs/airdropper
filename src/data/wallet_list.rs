@@ -6,7 +6,8 @@ use std::{
 };
 
 use solana_client::rpc_client::{RpcClient, SerializableTransaction};
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signature::Signature, signer::Signer};
+use solana_program::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::{signature::Signature, signer::Signer};
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::instruction::transfer_checked;
 
@@ -15,6 +16,8 @@ use crate::{
     errors::{Error, Result},
     utils::{check_atas, create_backup_if_file_exists, get_compute_budget_ixs, prep_tx},
 };
+
+use super::{CsvEntrySer, CsvListSerde};
 
 // TODO: use serde with
 #[derive(Debug, serde::Deserialize, Clone)]
@@ -85,7 +88,7 @@ pub struct WalletListEntry {
     pub status: Status,
 }
 
-impl WalletListEntry {
+impl CsvEntrySer for WalletListEntry {
     fn to_record(&self) -> Vec<String> {
         let (status, status_inner) = self.status.to_record();
         vec![
@@ -96,7 +99,9 @@ impl WalletListEntry {
             status_inner.unwrap_or("".to_string()),
         ]
     }
+}
 
+impl WalletListEntry {
     // Failed -> given status
     fn set_failed_to(&mut self, status: Status) {
         if let Status::Failed(_) = self.status {
@@ -190,8 +195,8 @@ impl TryFrom<WalletListEntryRaw> for WalletListEntry {
 #[derive(Debug)]
 pub struct WalletList(pub Vec<WalletListEntry>);
 
-impl WalletList {
-    pub fn parse_list_from_path(path: &PathBuf) -> Result<Self> {
+impl CsvListSerde for WalletList {
+    fn parse_list_from_path(path: &PathBuf) -> Result<Self> {
         log::info!("Parsing wallet list from {path:?} ...");
         let data = std::fs::read_to_string(path)?;
         let mut rdr = csv::ReaderBuilder::new()
@@ -210,7 +215,7 @@ impl WalletList {
         Ok(Self(list))
     }
 
-    pub fn save_to_path(&mut self, path: &PathBuf) -> Result<()> {
+    fn save_to_path(&mut self, path: &PathBuf) -> Result<()> {
         log::info!("Saving status data to {path:?} ...");
         log::info!("{:#?}", self.count_each_status());
         create_backup_if_file_exists(path)?;
@@ -223,7 +228,9 @@ impl WalletList {
         log::info!("Finished saving status data");
         Ok(())
     }
+}
 
+impl WalletList {
     pub fn count_each_status(&self) -> HashMap<String, usize> {
         self.0.iter().fold(HashMap::new(), |mut map, entry| {
             map.entry(entry.status.to_string())

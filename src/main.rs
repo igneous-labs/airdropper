@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{builder::ValueParser, Parser};
 use sanctum_solana_cli_utils::ConfigWrapper;
 
@@ -22,13 +20,6 @@ struct Args {
         value_parser = ValueParser::new(ConfigWrapper::parse_from_path),
     )]
     pub config: ConfigWrapper,
-
-    #[arg(
-        long,
-        short,
-        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
-    )]
-    pub wallet_list_path: PathBuf,
 
     #[arg(
         long,

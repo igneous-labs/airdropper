@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use clap::{
     builder::{StringValueParser, TypedValueParser},
@@ -8,7 +8,7 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::{
     consts::CHECK_MAX_RETRY,
-    data::WalletList,
+    data::{CsvListSerde, WalletList},
     errors::Result,
     subcmd::Subcmd,
     utils::{add_to_filename, get_token_mint_info},
@@ -17,6 +17,13 @@ use crate::{
 #[derive(Args, Debug)]
 #[command(long_about = "Given wallet list, check associated token accounts")]
 pub struct CheckArgs {
+    #[arg(
+        long,
+        short,
+        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
+    )]
+    pub wallet_list_path: PathBuf,
+
     #[arg(
         long,
         short,
@@ -29,6 +36,7 @@ pub struct CheckArgs {
 impl CheckArgs {
     pub fn run(args: crate::Args) -> Result<()> {
         let Self {
+            wallet_list_path,
             airdrop_token_mint_pubkey,
         } = match args.subcmd {
             Subcmd::Check(a) => a,
@@ -38,11 +46,11 @@ impl CheckArgs {
         let (token_program_id, token_decimals) =
             get_token_mint_info(&rpc_client, &airdrop_token_mint_pubkey)?;
 
-        let mut wallet_list = WalletList::parse_list_from_path(&args.wallet_list_path)?;
+        let mut wallet_list = WalletList::parse_list_from_path(&wallet_list_path)?;
         let wallet_count = wallet_list.0.len();
 
         log::info!("Wallet count: {wallet_count}");
-        let stage_save_path = add_to_filename(&args.wallet_list_path, "checked");
+        let stage_save_path = add_to_filename(&wallet_list_path, "checked");
 
         for check_trial_count in 1..=CHECK_MAX_RETRY {
             log::info!("Checking the airdrop qualification ...");

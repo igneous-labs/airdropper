@@ -1,21 +1,35 @@
+use std::path::PathBuf;
+
 use clap::Args;
 
 use crate::{
-    data::WalletList,
+    data::{CsvListSerde, WalletList},
     errors::{Error, Result},
+    subcmd::Subcmd,
     utils::add_to_filename,
 };
 
 #[derive(Args, Debug)]
 #[command(long_about = "Confirm unconfirmed entries")]
-pub struct ConfirmArgs;
+pub struct ConfirmArgs {
+    #[arg(
+        long,
+        short,
+        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
+    )]
+    pub wallet_list_path: PathBuf,
+}
 
 impl ConfirmArgs {
     pub fn run(args: crate::Args) -> Result<()> {
+        let Self { wallet_list_path } = match args.subcmd {
+            Subcmd::Confirm(a) => a,
+            _ => unreachable!(),
+        };
         let rpc_client = args.config.rpc_client();
 
-        let send_stage_save_path = add_to_filename(&args.wallet_list_path, "sent");
-        let confirm_stage_save_path = add_to_filename(&args.wallet_list_path, "confirmed");
+        let send_stage_save_path = add_to_filename(&wallet_list_path, "sent");
+        let confirm_stage_save_path = add_to_filename(&wallet_list_path, "confirmed");
 
         let base_stage_save_path = if confirm_stage_save_path.try_exists()? {
             log::info!("Detected saved confirm stage, retrying confirmation ...");
@@ -42,7 +56,7 @@ impl ConfirmArgs {
             total_unconfirmed_count - current_unconfirmed_count,
             current_unconfirmed_count
         );
-        let stage_save_path = add_to_filename(&args.wallet_list_path, "confirmed");
+        let stage_save_path = add_to_filename(&wallet_list_path, "confirmed");
 
         if !args.dry_run {
             wallet_list
