@@ -57,7 +57,10 @@ pub struct SnapshotArgs {
         short,
         help = "Path to payer keypair who holds the token to be airdropped (to be excluded from snapshot)"
     )]
-    payer_path: PathBuf,
+    payer_path: Option<PathBuf>,
+
+    #[arg(long, short, help = "Pubkeys to exclude from snapshot")]
+    black_list: Vec<String>,
 
     #[arg(long, short, help = "Path to token snapshot csv file")]
     snapshot_path: PathBuf,
@@ -69,19 +72,27 @@ impl SnapshotArgs {
             snapshot_token_mint_pubkey,
             minimum_balance,
             payer_path,
+            black_list,
             snapshot_path,
         } = match args.subcmd {
             Subcmd::Snapshot(a) => a,
             _ => unreachable!(),
         };
-        let payer_pubkey = read_keypair_file(
-            payer_path
-                .to_str()
-                .expect("Could not convert payer_path to str"),
-        )
-        .map_err(|_e| Error::KeyPairError)?
-        .pubkey();
+        let mut black_list = black_list
+            .into_iter()
+            .map(|pk_str| Pubkey::from_str(&pk_str).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?;
 
+        if let Some(payer_path) = payer_path {
+            let payer_pubkey = read_keypair_file(
+                payer_path
+                    .to_str()
+                    .expect("Could not convert payer_path to str"),
+            )
+            .map_err(|_e| Error::KeyPairError)?
+            .pubkey();
+            black_list.push(payer_pubkey);
+        }
         log::info!("Required minimum balance: {}", minimum_balance);
 
         log::info!(
@@ -94,7 +105,7 @@ impl SnapshotArgs {
             &rpc_client,
             &snapshot_token_mint_pubkey,
             minimum_balance,
-            &[payer_pubkey],
+            &black_list,
         )?;
         log::info!("Total fetched wallet count: {}", snapshot.0.len());
 
