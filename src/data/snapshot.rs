@@ -57,12 +57,10 @@ impl CsvListSerde for Snapshot {
         let list = rdr
             .deserialize()
             .collect::<std::result::Result<Vec<SnapshotEntryRaw>, _>>()?;
-        println!("WTF1: {}", list.len());
         let mut list = list
             .into_iter()
             .map(SnapshotEntry::try_from)
             .collect::<std::result::Result<Vec<SnapshotEntry>, _>>()?;
-        println!("WTF2: {}", list.len());
         list.sort_by(|a, b| a.wallet_pubkey.cmp(&b.wallet_pubkey));
         log::info!("Finished parsing snapshot");
         Ok(Self(list))

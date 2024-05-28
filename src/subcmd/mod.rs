@@ -26,6 +26,7 @@ pub enum Subcmd {
 
 impl Subcmd {
     pub fn run(args: crate::Args) -> Result<()> {
+        log::info!("Running sub command: {:?}", args.subcmd);
         match args.subcmd {
             Self::Snapshot(_) => SnapshotArgs::run(args),
             Self::WalletList(_) => WalletListArgs::run(args),
