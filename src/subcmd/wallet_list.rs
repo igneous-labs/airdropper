@@ -9,15 +9,9 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
-#[command(
-    long_about = "Given a token snapshot and a airdrop amount, generate wallet list for airdrop"
-)]
+#[command(long_about = "Given a token snapshot and a airdrop amount, generate a wallet list")]
 pub struct WalletListArgs {
-    #[arg(
-        long,
-        short,
-        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
-    )]
+    #[arg(long, short, help = "Path to wallet list csv file")]
     pub wallet_list_path: PathBuf,
 
     #[arg(long, short, help = "The total amount (in token atomic) to airdrop")]

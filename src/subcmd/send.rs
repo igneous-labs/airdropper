@@ -18,13 +18,9 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
-#[command(long_about = "Send airdrop transactions")]
+#[command(long_about = "Given a checked wallet list, send airdrop transactions")]
 pub struct SendArgs {
-    #[arg(
-        long,
-        short,
-        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
-    )]
+    #[arg(long, short, help = "Path to wallet list csv file")]
     pub wallet_list_path: PathBuf,
 
     #[arg(

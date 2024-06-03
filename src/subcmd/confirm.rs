@@ -10,13 +10,9 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
-#[command(long_about = "Confirm unconfirmed entries")]
+#[command(long_about = "Given a sent wallet list, confirm unconfirmed transactions")]
 pub struct ConfirmArgs {
-    #[arg(
-        long,
-        short,
-        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
-    )]
+    #[arg(long, short, help = "Path to wallet list csv file")]
     pub wallet_list_path: PathBuf,
 }
 
