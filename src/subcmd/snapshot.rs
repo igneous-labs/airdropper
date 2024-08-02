@@ -18,7 +18,7 @@ use solana_sdk::{
 
 use crate::{
     consts::DEFAULT_SNAPSHOT_MINIMUM_BALANCE_ATOMIC,
-    data::{WalletList, WalletListEntry},
+    data::{CsvListSerde, Snapshot, SnapshotEntry},
     errors::{Error, Result},
     subcmd::Subcmd,
     utils::get_token_mint_info,
@@ -32,9 +32,7 @@ const AMOUNT_LENGTH: usize = 8;
 const TOKEN_ACCOUNT_SIZE: u64 = 165;
 
 #[derive(Args, Debug)]
-#[command(
-    long_about = "Take a token snapshot of given mint and generate wallet list for the airdrop"
-)]
+#[command(long_about = "Take a token snapshot of given mint")]
 pub struct SnapshotArgs {
     #[arg(
         long,
@@ -43,9 +41,6 @@ pub struct SnapshotArgs {
         value_parser = StringValueParser::new().try_map(|s| Pubkey::from_str(&s)),
     )]
     snapshot_token_mint_pubkey: Pubkey,
-
-    #[arg(long, short, help = "The total amount (in token atomic) to airdrop")]
-    amount_to_airdrop: u64,
 
     #[arg(
         long,
@@ -60,30 +55,43 @@ pub struct SnapshotArgs {
         short,
         help = "Path to payer keypair who holds the token to be airdropped (to be excluded from snapshot)"
     )]
-    payer_path: PathBuf,
+    payer_path: Option<PathBuf>,
+
+    #[arg(long, short, help = "Pubkeys to exclude from snapshot")]
+    black_list: Vec<String>,
+
+    #[arg(long, short, help = "Path to token snapshot csv file")]
+    snapshot_path: PathBuf,
 }
 
 impl SnapshotArgs {
     pub fn run(args: crate::Args) -> Result<()> {
         let Self {
             snapshot_token_mint_pubkey,
-            amount_to_airdrop,
             minimum_balance,
             payer_path,
+            black_list,
+            snapshot_path,
         } = match args.subcmd {
             Subcmd::Snapshot(a) => a,
             _ => unreachable!(),
         };
-        let payer_pubkey = read_keypair_file(
-            payer_path
-                .to_str()
-                .expect("Could not convert payer_path to str"),
-        )
-        .map_err(|_e| Error::KeyPairError)?
-        .pubkey();
+        let mut black_list = black_list
+            .into_iter()
+            .map(|pk_str| Pubkey::from_str(&pk_str).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?;
 
+        if let Some(payer_path) = payer_path {
+            let payer_pubkey = read_keypair_file(
+                payer_path
+                    .to_str()
+                    .expect("Could not convert payer_path to str"),
+            )
+            .map_err(|_e| Error::KeyPairError)?
+            .pubkey();
+            black_list.push(payer_pubkey);
+        }
         log::info!("Required minimum balance: {}", minimum_balance);
-        log::info!("Total amount to airdrop: {}", amount_to_airdrop);
 
         log::info!(
             "Taking token snapshot for {:?}...",
@@ -91,50 +99,18 @@ impl SnapshotArgs {
         );
         let rpc_client = args.config.rpc_client();
 
-        let snapshot = take_snapshot(
+        let mut snapshot = take_snapshot(
             &rpc_client,
             &snapshot_token_mint_pubkey,
             minimum_balance,
-            &[payer_pubkey],
+            &black_list,
         )?;
-        log::info!("Total fetched wallet count: {}", snapshot.len());
-
-        let total_amount: u64 = snapshot.values().sum();
-        let mut wallet_list = WalletList(
-            snapshot
-                .into_iter()
-                .filter_map(|(wallet_pubkey, balance)| {
-                    let amount_to_airdrop =
-                        (balance as u128 * amount_to_airdrop as u128 / total_amount as u128) as u64;
-                    if amount_to_airdrop != 0 {
-                        Some(WalletListEntry {
-                            wallet_pubkey,
-                            amount_to_airdrop,
-                            ..Default::default()
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
-        );
-        log::info!("Total wallet list count: {}", wallet_list.0.len());
-
-        let total_amount_from_wallet_list = wallet_list
-            .0
-            .iter()
-            .map(|entry| entry.amount_to_airdrop)
-            .sum::<u64>();
-        log::info!(
-            "Total amount in wallet list: {}",
-            total_amount_from_wallet_list
-        );
-        assert!(total_amount_from_wallet_list <= total_amount);
+        log::info!("Total fetched wallet count: {}", snapshot.0.len());
 
         if !args.dry_run {
-            wallet_list
-                .save_to_path(&args.wallet_list_path)
-                .unwrap_or_else(|err| log::error!("Failed to save status list: {err:?}"));
+            snapshot
+                .save_to_path(&snapshot_path)
+                .unwrap_or_else(|err| log::error!("Failed to save snapshot: {err:?}"));
         }
 
         Ok(())
@@ -146,7 +122,7 @@ pub fn take_snapshot(
     token_mint_pubkey: &Pubkey,
     minimum_balance_atomic: u64,
     blacklist: &[Pubkey],
-) -> Result<HashMap<Pubkey, u64>> {
+) -> Result<Snapshot> {
     let (token_program_id, _token_decimals) = get_token_mint_info(rpc_client, token_mint_pubkey)?;
 
     let filters = {
@@ -173,7 +149,7 @@ pub fn take_snapshot(
         with_context: None,
     };
 
-    let mut res = HashMap::new();
+    let mut entries = HashMap::new();
     rpc_client
         .get_program_accounts_with_config(&token_program_id, config)?
         .into_iter()
@@ -185,10 +161,19 @@ pub fn take_snapshot(
             let token_balance_atomic: u64 =
                 *try_from_bytes(&account.data[OWNER_LENGTH..OWNER_LENGTH + AMOUNT_LENGTH]).unwrap();
             if token_balance_atomic >= minimum_balance_atomic {
-                res.entry(wallet_pubkey)
+                entries
+                    .entry(wallet_pubkey)
                     .and_modify(|e| *e += token_balance_atomic)
                     .or_insert(token_balance_atomic);
             }
         });
-    Ok(res)
+    Ok(Snapshot(
+        entries
+            .into_iter()
+            .map(|(wallet_pubkey, token_balance_atomic)| SnapshotEntry {
+                wallet_pubkey,
+                token_balance_atomic,
+            })
+            .collect(),
+    ))
 }

@@ -3,18 +3,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde_json::json;
 use solana_account_decoder::parse_token::{parse_token, TokenAccountType};
 use solana_client::rpc_client::RpcClient;
 use solana_program::instruction::Instruction;
+use solana_rpc_client_api::{request::RpcRequest, response::RpcResult};
 use solana_sdk::{
     account::Account,
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     message::{v0::Message, VersionedMessage},
     pubkey::Pubkey,
+    signature::Signature,
     signer::Signer,
     transaction::VersionedTransaction,
 };
+use solana_transaction_status::TransactionStatus;
 use spl_token_2022::{extension::StateWithExtensionsOwned, state::Mint};
 
 use crate::{data::Status, errors::Result};
@@ -128,4 +132,20 @@ pub fn prompt_confirmation(msg: &str) -> bool {
     std::io::stdout().flush().unwrap();
     std::io::stdin().read_line(&mut buffer).unwrap();
     return buffer.trim().to_uppercase().as_str() == "Y";
+}
+
+// Sat Jun  8 05:57:44 AM UTC 2024
+//  - noticed rpc_client.confrim_transaction is broken.
+//  - further investigation showed that  { "searchTransactionHistory": true }
+//    for rpc call RpcRequest::GetSignatureStatuses is causing it to return false
+//  - suspect that the default value for searchTransactionHistory has changed
+pub fn confirm_signature(rpc_client: &RpcClient, sig: &Signature) -> Result<Option<bool>> {
+    let res: RpcResult<Vec<Option<TransactionStatus>>> = rpc_client.send(
+        RpcRequest::GetSignatureStatuses,
+        json!([[sig.to_string()], { "searchTransactionHistory": true }]),
+    );
+    let res = &res?;
+    Ok(res.value[0]
+        .as_ref()
+        .map(|tx_status| tx_status.status.is_ok()))
 }

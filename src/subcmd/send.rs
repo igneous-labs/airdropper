@@ -9,7 +9,7 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 
 use crate::{
     consts::{DEFAULT_COMPUTE_UNIT_LIMIT, DEFAULT_COMPUTE_UNIT_PRICE},
-    data::WalletList,
+    data::{CsvListSerde, WalletList},
     errors::{Error, Result},
     subcmd::Subcmd,
     utils::{
@@ -18,8 +18,11 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
-#[command(long_about = "Send airdrop transactions")]
+#[command(long_about = "Given a checked wallet list, send airdrop transactions")]
 pub struct SendArgs {
+    #[arg(long, short, help = "Path to wallet list csv file")]
+    pub wallet_list_path: PathBuf,
+
     #[arg(
         long,
         short,
@@ -62,6 +65,7 @@ pub struct SendArgs {
 impl SendArgs {
     pub fn run(args: crate::Args) -> Result<()> {
         let Self {
+            wallet_list_path,
             airdrop_token_mint_pubkey,
             payer_path,
             compute_unit_limit,
@@ -88,9 +92,9 @@ impl SendArgs {
         );
 
         // Note: assume that the either check stage or confirmed stage ran beforehand
-        let check_stage_save_path = add_to_filename(&args.wallet_list_path, "checked");
-        let confirm_stage_save_path = add_to_filename(&args.wallet_list_path, "confirmed");
-        let current_stage_save_path = add_to_filename(&args.wallet_list_path, "sent");
+        let check_stage_save_path = add_to_filename(&wallet_list_path, "checked");
+        let confirm_stage_save_path = add_to_filename(&wallet_list_path, "confirmed");
+        let current_stage_save_path = add_to_filename(&wallet_list_path, "sent");
 
         let mut wallet_list = if confirm_stage_save_path.try_exists()? {
             log::info!("Detected saved confirm stage, retrying confirmation ...");

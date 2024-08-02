@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{builder::ValueParser, Parser};
 use sanctum_solana_cli_utils::ConfigWrapper;
 
@@ -26,13 +24,6 @@ struct Args {
     #[arg(
         long,
         short,
-        help = "Path to wallet_list csv file in the format of \"wallet_pubkey,amount_to_airdrop\""
-    )]
-    pub wallet_list_path: PathBuf,
-
-    #[arg(
-        long,
-        short,
         help = "dry run (note: if set, does not save any files nor send any transactions)"
     )]
     pub dry_run: bool,
@@ -42,7 +33,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    flexi_logger::Logger::try_with_str("error, airdropper=debug")
+    flexi_logger::Logger::try_with_env_or_str("error, airdropper=debug")
         .unwrap()
         .append()
         .log_to_file(flexi_logger::FileSpec::default().suppress_timestamp()) // write logs to file
