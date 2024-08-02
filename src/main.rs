@@ -33,7 +33,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    flexi_logger::Logger::try_with_str("error, airdropper=debug")
+    flexi_logger::Logger::try_with_env_or_str("error, airdropper=debug")
         .unwrap()
         .append()
         .log_to_file(flexi_logger::FileSpec::default().suppress_timestamp()) // write logs to file

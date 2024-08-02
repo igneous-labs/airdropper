@@ -14,7 +14,10 @@ use spl_token_2022::instruction::transfer_checked;
 use crate::{
     consts::{ATA_GET_MULT_ACC_CHUNK_SIZE, TRANSFER_IXS_CHUNK_SIZE},
     errors::{Error, Result},
-    utils::{check_atas, create_backup_if_file_exists, get_compute_budget_ixs, prep_tx},
+    utils::{
+        check_atas, confirm_signature, create_backup_if_file_exists, get_compute_budget_ixs,
+        prep_tx,
+    },
 };
 
 use super::{CsvEntrySer, CsvListSerde};
@@ -420,24 +423,37 @@ impl WalletList {
         log::debug!("Confirming {} txs ...", unconfirmed_count);
         let mut confirmed_count: usize = 0;
         for sig in unconfirmed_signatures {
-            let res = rpc_client.confirm_transaction_with_commitment(&sig, rpc_client.commitment());
-            if let Ok(response) = res {
-                if response.value {
-                    log::debug!("Confirmed: {sig:?}");
-                    self.0
-                        .iter_mut()
-                        .filter(|entry| match entry.status {
-                            Status::Unconfirmed(signature) => signature == sig,
-                            _ => false,
-                        })
-                        .for_each(|entry| entry.set_unconfirmed_to_succeeded());
-                    confirmed_count += 1;
-                } else {
-                    log::debug!("Unconfirmed: {sig:?}");
+            let res = confirm_signature(rpc_client, &sig);
+            log::trace!("{res:?}");
+            if let Ok(val) = res {
+                match val {
+                    Some(true) => {
+                        log::debug!("Confirmed: {sig:?}");
+                        self.0
+                            .iter_mut()
+                            .filter(|entry| match entry.status {
+                                Status::Unconfirmed(signature) => signature == sig,
+                                _ => false,
+                            })
+                            .for_each(|entry| entry.set_unconfirmed_to_succeeded());
+                        confirmed_count += 1;
+                    }
+                    Some(false) => {
+                        log::debug!("Failed: {sig:?}");
+                        self.0
+                            .iter_mut()
+                            .filter(|entry| match entry.status {
+                                Status::Unconfirmed(signature) => signature == sig,
+                                _ => false,
+                            })
+                            .for_each(|entry| entry.set_unconfirmed_to_failed());
+                    }
+                    None => {
+                        log::debug!("Unconfirmed: {sig:?}");
+                    }
                 }
             } else {
                 log::debug!("Failed to get tx: {sig:?}");
-                // TODO: should this set the status to failed?
             }
         }
         let unconfirmed_count = unconfirmed_count - confirmed_count;
